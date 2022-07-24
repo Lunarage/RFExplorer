@@ -1,8 +1,9 @@
-import RFExplorer
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
-import matplotlib.pyplot as plt
-import numpy as np
+# import matplotlib.pyplot as plt
+# import numpy as np
+import argparse
+import RFExplorer
 
 # ---------------------------------------------------------- #
 #  Constants                                                 #
@@ -10,11 +11,48 @@ import numpy as np
 SERIALPORT = None
 BAUDRATE = 500000
 
+# ---------------------------------------------------------- #
+#  Default Argument Values                                   #
+# ---------------------------------------------------------- #
+
 START_FREQ = 486.0  # MHz
 STOP_FREQ = 766.0   # MHz
-RBW = 0.050         # MHz
+RBW = 0.025         # MHz
 SWEEP_TIME = 5      # Seconds
-FREQ_SPAN = RBW * RFExplorer.RFE_Common.CONST_RFE_MIN_SWEEP_POINTS
+
+# ---------------------------------------------------------- #
+#  Argparse                                                  #
+# ---------------------------------------------------------- #
+
+parser = argparse.ArgumentParser(description="foo")
+
+# TODO: allow multiple frequency ranges
+parser.add_argument("start_freq", type=float)
+parser.add_argument("stop_freq", type=float)
+parser.add_argument(
+    "--rbw",
+    type=float,
+    action="store",
+    default=RBW,
+    help="",
+)
+parser.add_argument(
+    "-t",
+    "--time",
+    type=int,
+    action="store",
+    default=SWEEP_TIME,
+    help="",
+)
+parser.add_argument(
+    "-o",
+    "--output",
+    type=str,
+    action="store",
+    default="Scan " + datetime.now().isoformat(sep=" ", timespec="minutes") + ".csv",
+    metavar="FILE",
+    help="",
+)
 
 # ---------------------------------------------------------- #
 #  Functions                                                 #
@@ -40,6 +78,7 @@ def extract_data(data_collection, data_array):
             amplitude = sweep_data.GetAmplitude_DBM(j)
             temp_data[freq].append(amplitude)
     # Choose max amplitude
+    # TODO: also calculate average
     for freq, amplitudes in temp_data.items():
         temp_data[freq] = round(max(amplitudes), 2)
     # Append to data array
@@ -48,31 +87,20 @@ def extract_data(data_collection, data_array):
         data_array[1].append(amplitude)
 
 
-def main():
+def initialize_device():
     """
-        Do the things
+        Initialize device
     """
-    # Initialize
-    objRFE = RFExplorer.RFECommunicator()
-    objRFE.AutoConfigure = False
-
-    ax = plt.gca()
-    plt.ylabel('Amplitude (dBm)')
-    plt.xlabel('Frequency (MHz)')
-    plt.ylim(ymin=-11, ymax=0)
-    plt.xlim(xmin=START_FREQ, xmax=STOP_FREQ)
-    ax.plot([[1], [1]])
-
-    data = [[], []]
+    obj_rfe = RFExplorer.RFECommunicator()
+    obj_rfe.AutoConfigure = False
 
     try:
-        objRFE.GetConnectedPorts()
-
-        if objRFE.ConnectPort(SERIALPORT, BAUDRATE):
+        obj_rfe.GetConnectedPorts()
+        if obj_rfe.ConnectPort(SERIALPORT, BAUDRATE):
             # Reset unit
             print("Resetting")
-            objRFE.SendCommand("r")
-            while(objRFE.IsResetEvent):
+            obj_rfe.SendCommand("r")
+            while obj_rfe.IsResetEvent:
                 pass
 
             # Wait for unit to stabalize
@@ -80,61 +108,93 @@ def main():
             time.sleep(3)
 
             # Request configuration
-            objRFE.SendCommand_RequestConfigData()
+            obj_rfe.SendCommand_RequestConfigData()
 
             # Wait to recieve configuration and model details
-            while(objRFE.ActiveModel == RFExplorer.RFE_Common.eModel.MODEL_NONE):
-                objRFE.ProcessReceivedString(True)
+            while obj_rfe.ActiveModel == RFExplorer.RFE_Common.eModel.MODEL_NONE:
+                obj_rfe.ProcessReceivedString(True)
 
-            if (objRFE.IsAnalyzer()):
-                currentStartFreq = round(START_FREQ, 3)
-                currentStopFreq = round(START_FREQ + FREQ_SPAN)
+    except Exception as ex:
+        print("Error:", str(ex))
+        return None
 
-                while currentStopFreq < STOP_FREQ+FREQ_SPAN:
-                    # Update scan frequencies
-                    objRFE.UpdateDeviceConfig(
-                        currentStartFreq, currentStopFreq)
-                    print("Scanning ", "{:.3f}".format(currentStartFreq), "MHz - ", "{:.3f}".format(currentStopFreq), "MHz", sep="")
-                    # Wait untill frequency is set
-                    while not objRFE.ProcessReceivedString(True) and objRFE.StartFrequency != currentStartFreq:
-                        pass
+    return obj_rfe
 
-                    # Sleeping while sweeping
-                    time.sleep(SWEEP_TIME)
-                    objRFE.ProcessReceivedString(True)
-                    sweepCollection = objRFE.SweepData
 
-                    # Store data
-                    extract_data(sweepCollection, data)
+def scan(obj_rfe, start_freq, stop_freq, rbw, sweep_time):
+    """
+        The scanning procedure
+    """
+    freq_span = rbw * RFExplorer.RFE_Common.CONST_RFE_MIN_SWEEP_POINTS
+    data = [[], []]
+    if obj_rfe.IsAnalyzer():
+        current_start_freq = round(start_freq, 3)
+        current_stop_freq = round(start_freq + freq_span)
 
-                    # Clean to clear RAM
-                    objRFE.CleanSweepData()
+        while current_stop_freq < stop_freq + freq_span:
+            # Update scan frequencies
+            obj_rfe.UpdateDeviceConfig(
+                current_start_freq, current_stop_freq)
+            print("Scanning ", "{:.3f}".format(
+                current_start_freq), "MHz - ", "{:.3f}".format(current_stop_freq), "MHz", sep="")
+            # Wait untill frequency is set
+            while not obj_rfe.ProcessReceivedString(True) and obj_rfe.StartFrequency != current_start_freq:
+                pass
 
-                    # Find next frequency span
-                    currentStartFreq = round(currentStopFreq + RBW, 3)
-                    currentStopFreq = round(currentStopFreq + FREQ_SPAN, 3)
+            # Sleeping while sweeping
+            time.sleep(sweep_time)
+            obj_rfe.ProcessReceivedString(True)
+            sweep_collection = obj_rfe.SweepData
 
-                    # Update plot
-                    del ax.lines[0]
-                    ax.plot(data[0], data[1])
-                    plt.pause(0.05)
+            # Store data
+            extract_data(sweep_collection, data)
+
+            # Clean to clear RAM
+            obj_rfe.CleanSweepData()
+
+            # Find next frequency span
+            current_start_freq = round(current_stop_freq + RBW, 3)
+            current_stop_freq = round(current_stop_freq + freq_span, 3)
+    return data
+
+
+def save_file(file_name, data):
+    """
+        Saves data to file
+    """
+    # TODO: option to convert to WSM (Sennhiser) format
+    with open(file_name, 'w', encoding="utf-8") as output_file:
+        for i in range(len(data[0])):
+            output_file.write("{:.3f}".format(data[0][i])+", " +
+                              "{:.1f}".format(data[1][i])+"\n")
+    print("File written to", file_name)
+
+
+# ---------------------------------------------------------- #
+#  Main Procedure                                            #
+# ---------------------------------------------------------- #
+
+
+def main():
+    """
+        Do the things
+    """
+    args = parser.parse_args()
+
+    obj_rfe = initialize_device()
+
+    try:
+        data = scan(obj_rfe, args.start_freq,
+                    args.stop_freq, args.rbw, args.time)
 
     except Exception as obEx:
         print("Error:", str(obEx))
 
     finally:
-        if objRFE is not None:
-            objRFE.Close()
+        if obj_rfe is not None:
+            obj_rfe.Close()
 
-    filename = 'Scan.csv'
-    with open(filename, 'w') as f:
-        for i in range(len(data[0])):
-            f.write("{:.3f}".format(data[0][i])+", " +
-                    "{:.1f}".format(data[1][i])+"\n")
-
-    print("File written to", filename)
-
-    plt.show()
+    save_file(args.output, data)
 
 
 if __name__ == "__main__":
