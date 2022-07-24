@@ -1,3 +1,7 @@
+"""
+    Module used to scan frequency ranges
+"""
+
 from datetime import datetime
 import time
 # import matplotlib.pyplot as plt
