@@ -26,11 +26,20 @@ SWEEP_TIME = 3      # Seconds
 #  Argparse                                                  #
 # ---------------------------------------------------------- #
 
-parser = argparse.ArgumentParser(description="RFExplorer Scan")
+parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+RFExplorer Scan Script
+Scan with an RFExplorer and output a csv-file ready to import in WWB.
+        """,
+        epilog="""
+Example: Scan.py --rbw 0.05 --time 5 518 526 550 566
+This will scan the ranges 518 MHz - 526 MHz and 550 MHz - 566 MHz
+with an RBW of 0.050 MHz and scanning for 5 seconds in each sub-range.
+        """
+        )
 
-# TODO: allow multiple frequency ranges
-parser.add_argument("start_freq", type=float)
-parser.add_argument("stop_freq", type=float)
+parser.add_argument("frequencies", nargs='+', type=float, help="Pairwise list of frequencies denote ranges")
 parser.add_argument(
     "--rbw",
     type=float,
@@ -68,6 +77,7 @@ parser.add_argument(
     "-c",
     "--calculator",
     type=str,
+    choices=["MAX", "AVG"],
     action="store",
     default="MAX",
     help="""
@@ -81,35 +91,6 @@ parser.add_argument(
 # ---------------------------------------------------------- #
 #  Functions                                                 #
 # ---------------------------------------------------------- #
-
-
-def extract_data(data_collection, data_array):
-    """
-        Process collected data
-    """
-    temp_data = {}
-
-    # Create array
-    for k in range(data_collection.GetData(0).TotalSteps):
-        sweep_data = data_collection.GetData(0)
-        freq = round(sweep_data.GetFrequencyMHZ(k), 3)
-        temp_data[freq] = []
-
-    # Fill array with data
-    for i in range(data_collection.Count):
-        sweep_data = data_collection.GetData(i)
-        for j in range(sweep_data.TotalSteps):
-            freq = round(sweep_data.GetFrequencyMHZ(j), 3)
-            amplitude = sweep_data.GetAmplitude_DBM(j)
-            temp_data[freq].append(amplitude)
-    # Choose max amplitude
-    # TODO: also calculate average
-    for freq, amplitudes in temp_data.items():
-        temp_data[freq] = round(max(amplitudes), 2)
-    # Append to data array
-    for freq, amplitude in temp_data.items():
-        data_array[0].append(freq)
-        data_array[1].append(amplitude)
 
 
 def initialize_device():
@@ -129,7 +110,6 @@ def initialize_device():
                 pass
 
             # Wait for unit to stabalize
-            print("Waiting")
             time.sleep(3)
 
             # Request configuration
@@ -146,6 +126,16 @@ def initialize_device():
     return obj_rfe
 
 
+def calculate_ranges(freqs, rbw):
+    """
+        Calculate all scan ranges from a pairwise list of frequencies
+    """
+    ranges = []
+    for start_freq, stop_freq in zip(freqs[0::2], freqs[1::2]):
+        ranges += calculate_sub_ranges(start_freq, stop_freq, rbw)
+    return ranges
+
+
 def calculate_sub_ranges(start_freq, stop_freq, rbw):
     """
     Calculate subranges to scan
@@ -153,11 +143,10 @@ def calculate_sub_ranges(start_freq, stop_freq, rbw):
     freq_span = rbw * RFExplorer.RFE_Common.CONST_RFE_MIN_SWEEP_POINTS
     start_freqs = np.arange(start_freq, stop_freq, freq_span+rbw).tolist()
     stop_freqs = np.arange(start_freq+freq_span, stop_freq+freq_span, freq_span+rbw).tolist()
-    assert len(start_freqs) == len(stop_freqs)
 
     freq_ranges = []
-    for i in range(len(start_freqs)):
-        freq_ranges.append({"start": round(start_freqs[i], 3), "stop": round(stop_freqs[i], 3)})
+    for sub_start_freq, sub_stop_freq in zip(start_freqs, stop_freqs, strict=True):
+        freq_ranges.append({"start": round(sub_start_freq, 3), "stop": round(sub_stop_freq, 3)})
 
     return freq_ranges
 
@@ -166,7 +155,7 @@ def scan(obj_rfe, freq_ranges, sweep_time):
     """
         The scanning procedure
     """
-    data = [[], []]
+    data = []
     if obj_rfe.IsAnalyzer():
         for freq_range in freq_ranges:
             # Update scan frequencies
@@ -185,13 +174,43 @@ def scan(obj_rfe, freq_ranges, sweep_time):
             time.sleep(sweep_time)
             obj_rfe.ProcessReceivedString(True)
             sweep_collection = obj_rfe.SweepData
-
-            # Store data
-            extract_data(sweep_collection, data)
+            for index in range(sweep_collection.Count):
+                data.append(sweep_collection.GetData(index))
 
             # Clean to clear RAM
             obj_rfe.CleanSweepData()
 
+    return data
+
+
+def restructure_scan_data(scan_data):
+    """
+        Process collected data
+    """
+    structured_data = {}
+    for sweep_data in scan_data:
+        for step in range(sweep_data.TotalSteps):
+            freq = round(sweep_data.GetFrequencyMHZ(step), 3)
+            amplitude = sweep_data.GetAmplitude_DBM(step)
+            if freq in structured_data:
+                structured_data[freq].append(amplitude)
+            else:
+                structured_data[freq] = [amplitude]
+
+    return structured_data
+
+
+def process_data(data, method):
+    """
+    Do some calculations on the dataset
+    """
+    for frequency, amplitudes in data.items():
+        if method == "MAX":
+            data[frequency] = max(amplitudes)
+        elif method == "AVG":
+            data[frequency] = sum(amplitudes) / len(amplitudes)
+        else:
+            print("Invalid calculator")
     return data
 
 
@@ -201,9 +220,9 @@ def save_file(file_name, data):
     """
     # TODO: option to convert to WSM (Sennhiser) format
     with open(file_name, 'w', encoding="utf-8") as output_file:
-        for i in range(len(data[0])):
-            output_file.write("{:.3f}".format(data[0][i])+", " +
-                              "{:.1f}".format(data[1][i])+"\n")
+        for frequency, amplitude in data.items():
+            output_file.write(f'{frequency:.3f}'+", " +
+                              f'{amplitude:.1f}'+"\n")
     print("File written to", file_name)
 
 
@@ -217,12 +236,15 @@ def main():
         Do the things
     """
     args = parser.parse_args()
+    if not len(args.frequencies) % 2 == 0:
+        raise Exception("Odd number of frequencies entered")
 
-    obj_rfe = initialize_device()
+    ranges = calculate_ranges(args.frequencies, args.rbw)
 
     try:
-        ranges = calculate_sub_ranges(args.start_freq, args.stop_freq, args.rbw)
-        data = scan(obj_rfe, ranges, args.time)
+        obj_rfe = initialize_device()
+        scan_data = scan(obj_rfe, ranges, args.time)
+        data = process_data(restructure_scan_data(scan_data), args.calculator)
 
     except Exception as ex:
         print("Error:", str(ex))
