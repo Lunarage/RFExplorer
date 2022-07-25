@@ -12,3 +12,5 @@ to scan and process wireless frequencies.
 # Developing
 
 Please use [pylint](https://pylint.pycqa.org/en/latest/) and [flake8](https://flake8.pycqa.org/en/latest/)
+
+[RF Explorer for Python API Reference](https://j3.rf-explorer.com/pythonAPI/annotated.html)

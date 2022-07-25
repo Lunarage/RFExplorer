@@ -5,8 +5,8 @@
 from datetime import datetime
 import time
 # import matplotlib.pyplot as plt
-# import numpy as np
 import argparse
+import numpy as np
 import RFExplorer
 
 # ---------------------------------------------------------- #
@@ -19,16 +19,14 @@ BAUDRATE = 500000
 #  Default Argument Values                                   #
 # ---------------------------------------------------------- #
 
-START_FREQ = 486.0  # MHz
-STOP_FREQ = 766.0   # MHz
 RBW = 0.025         # MHz
-SWEEP_TIME = 5      # Seconds
+SWEEP_TIME = 3      # Seconds
 
 # ---------------------------------------------------------- #
 #  Argparse                                                  #
 # ---------------------------------------------------------- #
 
-parser = argparse.ArgumentParser(description="foo")
+parser = argparse.ArgumentParser(description="RFExplorer Scan")
 
 # TODO: allow multiple frequency ranges
 parser.add_argument("start_freq", type=float)
@@ -38,7 +36,11 @@ parser.add_argument(
     type=float,
     action="store",
     default=RBW,
-    help="",
+    help="""
+    Default 0.025 MHz.
+    Resolution Bandwidth.
+    Increasing this number makes the scan faster, but lowers the accuracy.
+    """,
 )
 parser.add_argument(
     "-t",
@@ -46,7 +48,10 @@ parser.add_argument(
     type=int,
     action="store",
     default=SWEEP_TIME,
-    help="",
+    help="""
+    Default 3 seconds.
+    Amount of seconds to collect data in each subrange.
+    """,
 )
 parser.add_argument(
     "-o",
@@ -55,7 +60,22 @@ parser.add_argument(
     action="store",
     default="Scan " + datetime.now().isoformat(sep=" ", timespec="minutes") + ".csv",
     metavar="FILE",
-    help="",
+    help="""
+    Default 'Scan yyyy-mm-dd HH:MM.csv'
+    """,
+)
+parser.add_argument(
+    "-c",
+    "--calculator",
+    type=str,
+    action="store",
+    default="MAX",
+    help="""
+    Default MAX. The calculation method to use.
+    Available calculators:
+    MAX takes the maximum value of the scan data,
+    AVG takes the average value of the scan data.
+    """,
 )
 
 # ---------------------------------------------------------- #
@@ -74,6 +94,7 @@ def extract_data(data_collection, data_array):
         sweep_data = data_collection.GetData(0)
         freq = round(sweep_data.GetFrequencyMHZ(k), 3)
         temp_data[freq] = []
+
     # Fill array with data
     for i in range(data_collection.Count):
         sweep_data = data_collection.GetData(i)
@@ -125,24 +146,39 @@ def initialize_device():
     return obj_rfe
 
 
-def scan(obj_rfe, start_freq, stop_freq, rbw, sweep_time):
+def calculate_sub_ranges(start_freq, stop_freq, rbw):
+    """
+    Calculate subranges to scan
+    """
+    freq_span = rbw * RFExplorer.RFE_Common.CONST_RFE_MIN_SWEEP_POINTS
+    start_freqs = np.arange(start_freq, stop_freq, freq_span+rbw).tolist()
+    stop_freqs = np.arange(start_freq+freq_span, stop_freq+freq_span, freq_span+rbw).tolist()
+    assert len(start_freqs) == len(stop_freqs)
+
+    freq_ranges = []
+    for i in range(len(start_freqs)):
+        freq_ranges.append({"start": round(start_freqs[i], 3), "stop": round(stop_freqs[i], 3)})
+
+    return freq_ranges
+
+
+def scan(obj_rfe, freq_ranges, sweep_time):
     """
         The scanning procedure
     """
-    freq_span = rbw * RFExplorer.RFE_Common.CONST_RFE_MIN_SWEEP_POINTS
     data = [[], []]
     if obj_rfe.IsAnalyzer():
-        current_start_freq = round(start_freq, 3)
-        current_stop_freq = round(start_freq + freq_span)
-
-        while current_stop_freq < stop_freq + freq_span:
+        for freq_range in freq_ranges:
             # Update scan frequencies
             obj_rfe.UpdateDeviceConfig(
-                current_start_freq, current_stop_freq)
-            print("Scanning ", "{:.3f}".format(
-                current_start_freq), "MHz - ", "{:.3f}".format(current_stop_freq), "MHz", sep="")
+                freq_range["start"], freq_range["stop"])
+            print("Scanning ",
+                  f'{freq_range["start"]:.3f}', " MHz - ",
+                  f'{freq_range["stop"]:.3f}', " MHz",
+                  sep="")
+
             # Wait untill frequency is set
-            while not obj_rfe.ProcessReceivedString(True) and obj_rfe.StartFrequency != current_start_freq:
+            while not obj_rfe.ProcessReceivedString(True) and obj_rfe.StartFrequency != freq_range.start:
                 pass
 
             # Sleeping while sweeping
@@ -156,9 +192,6 @@ def scan(obj_rfe, start_freq, stop_freq, rbw, sweep_time):
             # Clean to clear RAM
             obj_rfe.CleanSweepData()
 
-            # Find next frequency span
-            current_start_freq = round(current_stop_freq + RBW, 3)
-            current_stop_freq = round(current_stop_freq + freq_span, 3)
     return data
 
 
@@ -188,11 +221,11 @@ def main():
     obj_rfe = initialize_device()
 
     try:
-        data = scan(obj_rfe, args.start_freq,
-                    args.stop_freq, args.rbw, args.time)
+        ranges = calculate_sub_ranges(args.start_freq, args.stop_freq, args.rbw)
+        data = scan(obj_rfe, ranges, args.time)
 
-    except Exception as obEx:
-        print("Error:", str(obEx))
+    except Exception as ex:
+        print("Error:", str(ex))
 
     finally:
         if obj_rfe is not None:
