@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 # import matplotlib.pyplot as plt
 import argparse
+import re
 import numpy as np
 import RFExplorer
 
@@ -14,6 +15,7 @@ import RFExplorer
 # ---------------------------------------------------------- #
 SERIALPORT = None
 BAUDRATE = 500000
+ILLEGAL_FILE_NAME_CHARACTERS = "#%&{}\<>*?/ $+`|'\"=:@" # Because windows
 
 # ---------------------------------------------------------- #
 #  Default Argument Values                                   #
@@ -67,7 +69,7 @@ parser.add_argument(
     "--output",
     type=str,
     action="store",
-    default="Scan " + datetime.now().isoformat(sep=" ", timespec="minutes") + ".csv",
+    default="Scan_" + datetime.now().isoformat(sep="_", timespec="minutes").replace(":", '') + ".csv",
     metavar="FILE",
     help="""
     Default 'Scan yyyy-mm-dd HH:MM.csv'
@@ -238,6 +240,7 @@ def main():
     args = parser.parse_args()
     if not len(args.frequencies) % 2 == 0:
         raise Exception("Odd number of frequencies entered")
+    # TODO: check if filename is legal (especially on windows)
 
     ranges = calculate_ranges(args.frequencies, args.rbw)
 
