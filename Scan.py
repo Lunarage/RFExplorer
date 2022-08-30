@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
     Module used to scan frequency ranges
 """
